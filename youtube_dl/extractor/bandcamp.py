@@ -79,6 +79,14 @@ class BandcampIE(InfoExtractor):
         },
     }]
 
+    def _json_data_extract(self, data_key, video_id, webpage):
+        return self._parse_json(
+            self._search_regex(
+                r'data-' + data_key + r'=(["\'])(?P<data>{.+?})\1',
+                webpage, 'JSON data {data_key}'.format(data_key=data_key),
+                group='data', default=None),
+            video_id, transform_source=unescapeHTML)
+
     def _real_extract(self, url):
         mobj = re.match(self._VALID_URL, url)
         title = mobj.group('title')
@@ -91,10 +99,9 @@ class BandcampIE(InfoExtractor):
         duration = None
 
         formats = []
-        track_info = self._parse_json(
-            self._search_regex(
-                r'trackinfo\s*:\s*\[\s*({.+?})\s*\]\s*,\s*?\n',
-                webpage, 'track info', default='{}'), title)
+        tralbum_data = self._json_data_extract('tralbum', title, webpage)
+        embed_data = self._json_data_extract('embed', title, webpage)
+        track_info = tralbum_data['trackinfo'][0]
         if track_info:
             file_ = track_info.get('file')
             if isinstance(file_, dict):
@@ -116,9 +123,9 @@ class BandcampIE(InfoExtractor):
             duration = float_or_none(track_info.get('duration'))
 
         def extract(key):
-            return self._search_regex(
-                r'\b%s\s*["\']?\s*:\s*(["\'])(?P<value>(?:(?!\1).)+)\1' % key,
-                webpage, key, default=None, group='value')
+            for data in tralbum_data['current'], embed_data, tralbum_data:
+                if key in data and data[key]:
+                    return data[key]
 
         artist = extract('artist')
         album = extract('album_title')
@@ -126,9 +133,7 @@ class BandcampIE(InfoExtractor):
             extract('publish_date') or extract('album_publish_date'))
         release_date = unified_strdate(extract('album_release_date'))
 
-        download_link = self._search_regex(
-            r'freeDownloadPage\s*:\s*(["\'])(?P<url>(?:(?!\1).)+)\1', webpage,
-            'download link', default=None, group='url')
+        download_link = tralbum_data['freeDownloadPage']
         if download_link:
             track_id = self._search_regex(
                 r'(?ms)var TralbumData = .*?[{,]\s*id: (?P<id>\d+),?$',
@@ -137,11 +142,7 @@ class BandcampIE(InfoExtractor):
             download_webpage = self._download_webpage(
                 download_link, track_id, 'Downloading free downloads page')
 
-            blob = self._parse_json(
-                self._search_regex(
-                    r'data-blob=(["\'])(?P<blob>{.+?})\1', download_webpage,
-                    'blob', group='blob'),
-                track_id, transform_source=unescapeHTML)
+            blob = self._json_data_extract('blob', track_id, download_webpage)
 
             info = try_get(
                 blob, (lambda x: x['digital_items'][0],
@@ -218,7 +219,7 @@ class BandcampIE(InfoExtractor):
         }
 
 
-class BandcampAlbumIE(InfoExtractor):
+class BandcampAlbumIE(BandcampIE):
     IE_NAME = 'Bandcamp:album'
     _VALID_URL = r'https?://(?:(?P<subdomain>[^.]+)\.)?bandcamp\.com(?:/album/(?P<album_id>[^/?#&]+))?'
 
@@ -314,11 +315,8 @@ class BandcampAlbumIE(InfoExtractor):
             for elem_content, t_path in track_elements
             if self._html_search_meta('duration', elem_content, default=None)]
 
-        title = self._html_search_regex(
-            r'album_title\s*:\s*"((?:\\.|[^"\\])+?)"',
-            webpage, 'title', fatal=False)
-        if title:
-            title = title.replace(r'\"', '"')
+        embed_data = self._json_data_extract('embed', album_id, webpage)
+        title = embed_data.get('album_title')
         return {
             '_type': 'playlist',
             'uploader_id': uploader_id,
@@ -328,7 +326,7 @@ class BandcampAlbumIE(InfoExtractor):
         }
 
 
-class BandcampWeeklyIE(InfoExtractor):
+class BandcampWeeklyIE(BandcampIE):
     IE_NAME = 'Bandcamp:weekly'
     _VALID_URL = r'https?://(?:www\.)?bandcamp\.com/?\?(?:.*?&)?show=(?P<id>\d+)'
     _TESTS = [{
@@ -355,11 +353,7 @@ class BandcampWeeklyIE(InfoExtractor):
         video_id = self._match_id(url)
         webpage = self._download_webpage(url, video_id)
 
-        blob = self._parse_json(
-            self._search_regex(
-                r'data-blob=(["\'])(?P<blob>{.+?})\1', webpage,
-                'blob', group='blob'),
-            video_id, transform_source=unescapeHTML)
+        blob = self._json_data_extract('blob', video_id, webpage)
 
         show = blob['bcw_show']
 
